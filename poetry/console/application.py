@@ -1,4 +1,5 @@
 import os
+import pkg_resources
 import re
 import sys
 import traceback
@@ -135,6 +136,9 @@ class Application(BaseApplication):
         # Self commands
         commands += [SelfUpdateCommand()]
 
+        # plugin commands
+        commands += self.load_plugin_commands()
+
         return commands
 
     def render_exception(self, e, o):
@@ -198,3 +202,9 @@ class Application(BaseApplication):
             o.writeln("<info>%s</info>" % self._running_command.get_synopsis())
 
             o.writeln("")
+
+    def load_plugin_commands(self):
+        commands = [
+            command() for command in pkg_resources.iter_entry_points("poetry_commands")
+        ]
+        return commands
