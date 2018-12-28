@@ -23,7 +23,7 @@ class Publisher:
 
     def publish(self, repository_name, username, password):
         if repository_name:
-            self._io.writeln(
+            self._io.write_line(
                 "Publishing <info>{}</info> (<comment>{}</comment>) "
                 "to <fg=cyan>{}</>".format(
                     self._package.pretty_name,
@@ -32,7 +32,7 @@ class Publisher:
                 )
             )
         else:
-            self._io.writeln(
+            self._io.write_line(
                 "Publishing <info>{}</info> (<comment>{}</comment>) "
                 "to <fg=cyan>PyPI</>".format(
                     self._package.pretty_name, self._package.pretty_version
@@ -65,7 +65,7 @@ class Publisher:
             url = config["repositories"][repository_name]["url"]
 
         if not (username and password):
-            auth = get_http_basic_auth(repository_name)
+            auth = get_http_basic_auth(self._poetry.auth_config, repository_name)
             if auth:
                 username = auth[0]
                 password = auth[1]
@@ -74,7 +74,7 @@ class Publisher:
         if not username:
             username = self._io.ask("Username:")
 
-        if not password:
+        if password is None:
             password = self._io.ask_hidden("Password:")
 
         # TODO: handle certificates

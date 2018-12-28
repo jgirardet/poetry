@@ -5,7 +5,6 @@ description = ""
 category = "main"
 optional = false
 python-versions = "*"
-platform = "*"
 
 [[package]]
 name = "B"
@@ -14,10 +13,12 @@ description = ""
 category = "main"
 optional = false
 python-versions = "*"
-platform = "*"
 
 [package.dependencies]
-C = "^1.0"
+C = {version = "^1.0", optional = true}
+
+[package.extras]
+foo = ["C (^1.0)"]
 
 [[package]]
 name = "C"
@@ -26,11 +27,9 @@ description = ""
 category = "main"
 optional = false
 python-versions = "*"
-platform = "*"
 
 [metadata]
 python-versions = "*"
-platform = "*"
 content-hash = "123456789"
 
 [metadata.hashes]

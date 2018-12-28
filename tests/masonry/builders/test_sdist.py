@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 import ast
 import pytest
-import re
 import shutil
 import tarfile
 
 from email.parser import Parser
 
-from poetry.io import NullIO
+from clikit.io import NullIO
+
 from poetry.masonry.builders.sdist import SdistBuilder
 from poetry.masonry.utils.package_include import PackageInclude
 from poetry.packages import Package
@@ -91,12 +91,12 @@ def test_convert_dependencies():
     main = ["B>=1.0,<1.1"]
 
     extra_python = (
-        ':(python_version >= "2.7" and python_version < "2.8") '
-        'or (python_version >= "3.6" and python_version < "4.0")'
+        ':python_version >= "2.7" and python_version < "2.8" '
+        'or python_version >= "3.6" and python_version < "4.0"'
     )
     extra_d_dependency = (
-        'baz:(python_version >= "2.7" and python_version < "2.8") '
-        'or (python_version >= "3.4" and python_version < "4.0")'
+        'baz:python_version >= "2.7" and python_version < "2.8" '
+        'or python_version >= "3.4" and python_version < "4.0"'
     )
     extras = {extra_python: ["C==1.2.3"], extra_d_dependency: ["D==3.4.5"]}
 
@@ -121,6 +121,7 @@ def test_make_setup():
     assert ns["install_requires"] == ["cachy[msgpack]>=0.2.0,<0.3.0", "cleo>=0.6,<0.7"]
     assert ns["entry_points"] == {
         "console_scripts": [
+            "extra-script = my_package.extra:main[time]",
             "my-2nd-script = my_package:main2",
             "my-script = my_package:main",
         ]
@@ -165,6 +166,12 @@ def test_make_pkg_info():
         'pendulum (>=1.4,<2.0); extra == "time"',
     ]
 
+    urls = parsed.get_all("Project-URL")
+    assert urls == [
+        "Documentation, https://poetry.eustace.io/docs",
+        "Repository, https://github.com/sdispater/poetry",
+    ]
+
 
 def test_make_pkg_info_any_python():
     poetry = Poetry.create(project("module1"))
@@ -195,6 +202,25 @@ def test_find_files_to_add():
             Path("pyproject.toml"),
         ]
     )
+
+
+def test_make_pkg_info_multi_constraints_dependency():
+    poetry = Poetry.create(
+        Path(__file__).parent.parent.parent
+        / "fixtures"
+        / "project_with_multi_constraints_dependency"
+    )
+
+    builder = SdistBuilder(poetry, NullEnv(), NullIO())
+    pkg_info = builder.build_pkg_info()
+    p = Parser()
+    parsed = p.parsestr(to_str(pkg_info))
+
+    requires = parsed.get_all("Requires-Dist")
+    assert requires == [
+        'pendulum (>=1.5,<2.0); python_version < "3.4"',
+        'pendulum (>=2.0,<3.0); python_version >= "3.4" and python_version < "4.0"',
+    ]
 
 
 def test_find_packages():
@@ -283,6 +309,21 @@ def test_with_c_extensions():
         assert "extended-0.1/extended/extended.c" in tar.getnames()
 
 
+def test_with_c_extensions_src_layout():
+    poetry = Poetry.create(project("src_extended"))
+
+    builder = SdistBuilder(poetry, NullEnv(), NullIO())
+    builder.build()
+
+    sdist = fixtures_dir / "src_extended" / "dist" / "extended-0.1.tar.gz"
+
+    assert sdist.exists()
+
+    with tarfile.open(str(sdist), "r") as tar:
+        assert "extended-0.1/build.py" in tar.getnames()
+        assert "extended-0.1/src/extended/extended.c" in tar.getnames()
+
+
 def test_with_src_module_file():
     poetry = Poetry.create(project("source_file"))
 
@@ -367,6 +408,7 @@ def test_package_with_include(mocker):
     exec(compile(setup_ast, filename="setup.py", mode="exec"), ns)
     assert "package_dir" not in ns
     assert ns["packages"] == ["extra_dir", "extra_dir.sub_pkg", "package_with_include"]
+    assert ns["package_data"] == {"": ["*"]}
     assert ns["modules"] == ["my_module"]
 
     builder.build()
@@ -377,6 +419,7 @@ def test_package_with_include(mocker):
 
     with tarfile.open(str(sdist), "r") as tar:
         names = tar.getnames()
+        assert len(names) == len(set(names))
         assert "with-include-1.2.3/LICENSE" in names
         assert "with-include-1.2.3/README.rst" in names
         assert "with-include-1.2.3/extra_dir/__init__.py" in names
@@ -391,7 +434,63 @@ def test_package_with_include(mocker):
         assert "with-include-1.2.3/PKG-INFO" in names
 
 
-def test_proper_python_requires_if_single_version_specified():
+def test_default_with_excluded_data(mocker):
+    # Patch git module to return specific excluded files
+    p = mocker.patch("poetry.vcs.git.Git.get_ignored_files")
+    p.return_value = [
+        (
+            (
+                Path(__file__).parent
+                / "fixtures"
+                / "default_with_excluded_data"
+                / "my_package"
+                / "data"
+                / "sub_data"
+                / "data2.txt"
+            )
+            .relative_to(project("default_with_excluded_data"))
+            .as_posix()
+        )
+    ]
+    poetry = Poetry.create(project("default_with_excluded_data"))
+
+    builder = SdistBuilder(poetry, NullEnv(), NullIO())
+
+    # Check setup.py
+    setup = builder.build_setup()
+    setup_ast = ast.parse(setup)
+
+    setup_ast.body = [n for n in setup_ast.body if isinstance(n, ast.Assign)]
+    ns = {}
+    exec(compile(setup_ast, filename="setup.py", mode="exec"), ns)
+    assert "package_dir" not in ns
+    assert ns["packages"] == ["my_package"]
+    assert ns["package_data"] == {
+        "": ["*"],
+        "my_package": ["data/*", "data/sub_data/data3.txt"],
+    }
+
+    builder.build()
+
+    sdist = (
+        fixtures_dir / "default_with_excluded_data" / "dist" / "my-package-1.2.3.tar.gz"
+    )
+
+    assert sdist.exists()
+
+    with tarfile.open(str(sdist), "r") as tar:
+        names = tar.getnames()
+        assert len(names) == len(set(names))
+        assert "my-package-1.2.3/LICENSE" in names
+        assert "my-package-1.2.3/README.rst" in names
+        assert "my-package-1.2.3/my_package/__init__.py" in names
+        assert "my-package-1.2.3/my_package/data/data1.txt" in names
+        assert "my-package-1.2.3/pyproject.toml" in names
+        assert "my-package-1.2.3/setup.py" in names
+        assert "my-package-1.2.3/PKG-INFO" in names
+
+
+def test_proper_python_requires_if_two_digits_precision_version_specified():
     poetry = Poetry.create(project("simple_version"))
 
     builder = SdistBuilder(poetry, NullEnv(), NullIO())
@@ -400,3 +499,14 @@ def test_proper_python_requires_if_single_version_specified():
     parsed = p.parsestr(to_str(pkg_info))
 
     assert parsed["Requires-Python"] == ">=3.6,<3.7"
+
+
+def test_proper_python_requires_if_three_digits_precision_version_specified():
+    poetry = Poetry.create(project("single_python"))
+
+    builder = SdistBuilder(poetry, NullEnv(), NullIO())
+    pkg_info = builder.build_pkg_info()
+    p = Parser()
+    parsed = p.parsestr(to_str(pkg_info))
+
+    assert parsed["Requires-Python"] == "==2.7.15"

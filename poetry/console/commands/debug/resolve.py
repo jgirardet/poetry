@@ -9,21 +9,22 @@ class DebugResolveCommand(Command):
     """
     Debugs dependency resolution.
 
-    debug:resolve
+    resolve
         { package?* : packages to resolve. }
         { --E|extras=* : Extras to activate for the dependency. }
         { --python= : Python version(s) to use for resolution. }
         { --tree : Displays the dependency tree. }
+        { --install : Show what would be installed for the current system. }
     """
 
-    _loggers = ["poetry.repositories.pypi_repository"]
+    loggers = ["poetry.repositories.pypi_repository"]
 
     def handle(self):
-        from poetry.packages import Dependency
         from poetry.packages import ProjectPackage
         from poetry.puzzle import Solver
         from poetry.repositories.repository import Repository
         from poetry.semver import parse_constraint
+        from poetry.utils.env import EnvManager
 
         packages = self.argument("package")
 
@@ -35,7 +36,6 @@ class DebugResolveCommand(Command):
             )
             requirements = self._format_requirements(packages)
 
-            dependencies = []
             for name, constraint in requirements.items():
                 dep = package.add_dependency(name, constraint)
                 extras = []
@@ -48,13 +48,13 @@ class DebugResolveCommand(Command):
                 for ex in extras:
                     dep.extras.append(ex)
 
-            package.python_versions = (
-                self.option("python") or self.poetry.package.python_versions
-            )
-
-        solver = Solver(
-            package, self.poetry.pool, Repository(), Repository(), self.output
+        package.python_versions = self.option("python") or (
+            self.poetry.package.python_versions
         )
+
+        pool = self.poetry.pool
+
+        solver = Solver(package, pool, Repository(), Repository(), self._io)
 
         ops = solver.solve()
 
@@ -63,9 +63,8 @@ class DebugResolveCommand(Command):
         self.line("")
 
         if self.option("tree"):
-            show_command = self.get_application().find("show")
-            show_command.output = self.output
-            show_command.init_styles()
+            show_command = self.application.find("show")
+            show_command.init_styles(self.io)
 
             packages = [op.package for op in ops]
             repo = Repository(packages)
@@ -74,21 +73,33 @@ class DebugResolveCommand(Command):
             for pkg in repo.packages:
                 for require in requires:
                     if pkg.name == require.name:
-                        show_command.display_package_tree(pkg, repo)
+                        show_command.display_package_tree(self.io, pkg, repo)
                         break
 
             return 0
 
+        env = EnvManager(self.poetry.config).get(self.poetry.file.parent)
+        current_python_version = parse_constraint(
+            ".".join(str(v) for v in env.version_info)
+        )
         for op in ops:
-            package = op.package
+            pkg = op.package
+            if self.option("install"):
+                if not pkg.python_constraint.allows(
+                    current_python_version
+                ) or not env.is_valid_for_marker(pkg.marker):
+                    continue
+
             self.line(
                 "  - <info>{}</info> (<comment>{}</comment>)".format(
-                    package.name, package.version
+                    pkg.name, pkg.version
                 )
             )
-            if package.requirements:
-                for req_name, req_value in package.requirements.items():
-                    self.line("    - {}: {}".format(req_name, req_value))
+            if not pkg.python_constraint.is_any():
+                self.line("    - python: {}".format(pkg.python_versions))
+
+            if not pkg.marker.is_any():
+                self.line("    - marker: {}".format(pkg.marker))
 
     def _determine_requirements(self, requires):  # type: (List[str]) -> List[str]
         from poetry.semver import parse_constraint
@@ -97,7 +108,6 @@ class DebugResolveCommand(Command):
             return []
 
         requires = self._parse_name_version_pairs(requires)
-        result = []
         for requirement in requires:
             if "version" in requirement:
                 parse_constraint(requirement["version"])

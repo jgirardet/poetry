@@ -1,18 +1,19 @@
 import json
+import re
 
 import poetry.packages
 import poetry.repositories
 
 from hashlib import sha256
 from tomlkit import document
-from tomlkit import inline_table
 from typing import List
 
 from poetry.utils._compat import Path
 from poetry.utils.toml_file import TomlFile
+from poetry.version.markers import parse_marker
 
 
-class Locker:
+class Locker(object):
 
     _relevant_keys = ["dependencies", "dev-dependencies", "source", "extras"]
 
@@ -85,6 +86,35 @@ class Locker:
             package.optional = info["optional"]
             package.hashes = lock_data["metadata"]["hashes"][info["name"]]
             package.python_versions = info["python-versions"]
+            extras = info.get("extras", {})
+            if extras:
+                for name, deps in extras.items():
+                    package.extras[name] = []
+
+                    for dep in deps:
+                        m = re.match(r"^(.+?)(?:\s+\((.+)\))?$", dep)
+                        dep_name = m.group(1)
+                        constraint = m.group(2) or "*"
+
+                        package.extras[name].append(
+                            poetry.packages.Dependency(dep_name, constraint)
+                        )
+
+            if "marker" in info:
+                package.marker = parse_marker(info["marker"])
+            else:
+                # Compatibility for old locks
+                if "requirements" in info:
+                    dep = poetry.packages.Dependency("foo", "0.0.0")
+                    for name, value in info["requirements"].items():
+                        if name == "python":
+                            dep.python_versions = value
+                        elif name == "platform":
+                            dep.platform = value
+
+                    split_dep = dep.to_pep_508(False).split(";")
+                    if len(split_dep) > 1:
+                        package.marker = parse_marker(split_dep[1].strip())
 
             for dep_name, constraint in info.get("dependencies", {}).items():
                 if isinstance(constraint, list):
@@ -94,9 +124,6 @@ class Locker:
                     continue
 
                 package.add_dependency(dep_name, constraint)
-
-            if "requirements" in info:
-                package.requirements = info["requirements"]
 
             if "source" in info:
                 package.source_type = info["source"]["type"]
@@ -129,7 +156,6 @@ class Locker:
 
         lock["metadata"] = {
             "python-versions": root.python_versions,
-            "platform": root.platform,
             "content-hash": self._content_hash,
             "hashes": hashes,
         }
@@ -152,7 +178,7 @@ class Locker:
 
     def _get_content_hash(self):  # type: () -> str
         """
-        Returns the sha256 hash of the sorted content of the composer file.
+        Returns the sha256 hash of the sorted content of the pyproject file.
         """
         content = self._local_config
 
@@ -195,20 +221,19 @@ class Locker:
 
             constraint = {"version": str(dependency.pretty_constraint)}
 
+            if dependency.extras:
+                constraint["extras"] = dependency.extras
+
+            if dependency.is_optional():
+                constraint["optional"] = True
+
             if not dependency.python_constraint.is_any():
                 constraint["python"] = str(dependency.python_constraint)
-
-            if dependency.platform != "*":
-                constraint["platform"] = dependency.platform
 
             if len(constraint) == 1:
                 dependencies[dependency.pretty_name].append(constraint["version"])
             else:
                 dependencies[dependency.pretty_name].append(constraint)
-
-        for name, constraints in dependencies.items():
-            if len(constraints) == 1:
-                dependencies[name] = constraints[0]
 
         data = {
             "name": package.pretty_name,
@@ -217,9 +242,20 @@ class Locker:
             "category": package.category,
             "optional": package.optional,
             "python-versions": package.python_versions,
-            "platform": package.platform,
             "hashes": sorted(package.hashes),
         }
+        if not package.marker.is_any():
+            data["marker"] = str(package.marker)
+
+        if package.extras:
+            extras = {}
+            for name, deps in package.extras.items():
+                extras[name] = [
+                    str(dep) if not dep.constraint.is_any() else dep.name
+                    for dep in deps
+                ]
+
+            data["extras"] = extras
 
         if dependencies:
             for k, constraints in dependencies.items():
@@ -234,8 +270,5 @@ class Locker:
                 "url": package.source_url,
                 "reference": package.source_reference,
             }
-
-        if package.requirements:
-            data["requirements"] = package.requirements
 
         return data

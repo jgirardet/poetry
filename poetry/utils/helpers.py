@@ -1,8 +1,11 @@
+import os
 import re
 import shutil
+import stat
 import tempfile
 
 from contextlib import contextmanager
+from typing import Optional
 from typing import Union
 
 from poetry.config import Config
@@ -80,9 +83,20 @@ def parse_requires(requires):  # type: (str) -> Union[list, None]
         return requires_dist
 
 
-def get_http_basic_auth(repository_name):  # type: (str) -> tuple
-    config = Config.create("auth.toml")
+def get_http_basic_auth(
+    config, repository_name
+):  # type: (Config, str) -> Optional[tuple]
     repo_auth = config.setting("http-basic.{}".format(repository_name))
     if repo_auth:
-        return repo_auth["username"], repo_auth["password"]
+        return repo_auth["username"], repo_auth.get("password")
+
     return None
+
+
+def _on_rm_error(func, path, exc_info):
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def safe_rmtree(path):
+    shutil.rmtree(path, onerror=_on_rm_error)
