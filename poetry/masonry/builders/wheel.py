@@ -11,10 +11,10 @@ import zipfile
 
 from base64 import urlsafe_b64encode
 from io import StringIO
+from typing import Set
 
 from poetry.__version__ import __version__
 from poetry.semver import parse_constraint
-from poetry.utils._compat import Path
 
 from ..utils.helpers import normalize_file_permissions
 from ..utils.package_include import PackageInclude
@@ -34,8 +34,8 @@ Tag: {tag}
 
 
 class WheelBuilder(Builder):
-    def __init__(self, poetry, venv, io, target_dir=None, original=None):
-        super(WheelBuilder, self).__init__(poetry, venv, io)
+    def __init__(self, poetry, env, io, target_dir=None, original=None):
+        super(WheelBuilder, self).__init__(poetry, env, io)
 
         self._records = []
         self._original_path = self._path
@@ -44,14 +44,16 @@ class WheelBuilder(Builder):
             self._original_path = original.file.parent
 
     @classmethod
-    def make_in(cls, poetry, venv, io, directory=None, original=None):
-        wb = WheelBuilder(poetry, venv, io, target_dir=directory, original=original)
+    def make_in(cls, poetry, env, io, directory=None, original=None):
+        wb = WheelBuilder(poetry, env, io, target_dir=directory, original=original)
         wb.build()
 
+        return wb.wheel_filename
+
     @classmethod
-    def make(cls, poetry, venv, io):
+    def make(cls, poetry, env, io):
         """Build a wheel in the dist/ directory, and optionally upload it."""
-        cls.make_in(poetry, venv, io)
+        cls.make_in(poetry, env, io)
 
     def build(self):
         self._io.writeln(" - Building <info>wheel</info>")
@@ -65,8 +67,8 @@ class WheelBuilder(Builder):
         with zipfile.ZipFile(
             os.fdopen(fd, "w+b"), mode="w", compression=zipfile.ZIP_DEFLATED
         ) as zip_file:
-            self._build()
             self._copy_module(zip_file)
+            self._build(zip_file)
             self._write_metadata(zip_file)
             self._write_record(zip_file)
 
@@ -77,7 +79,7 @@ class WheelBuilder(Builder):
 
         self._io.writeln(" - Built <fg=cyan>{}</>".format(self.wheel_filename))
 
-    def _build(self):
+    def _build(self, wheel):
         if self._package.build:
             setup = self._path / "setup.py"
 
@@ -86,7 +88,7 @@ class WheelBuilder(Builder):
             current_path = os.getcwd()
             try:
                 os.chdir(str(self._path))
-                self._venv.run(
+                self._env.run(
                     "python", str(setup), "build", "-b", str(self._path / "build")
                 )
             finally:
@@ -101,13 +103,25 @@ class WheelBuilder(Builder):
                 return
 
             lib = lib[0]
-            for pkg in lib.glob("*"):
-                shutil.rmtree(str(self._path / pkg.name))
-                shutil.copytree(str(pkg), str(self._path / pkg.name))
+            excluded = self.find_excluded_files()
+            for pkg in lib.glob("**/*"):
+                if pkg.is_dir() or pkg in excluded:
+                    continue
+
+                rel_path = str(pkg.relative_to(lib))
+
+                if rel_path in wheel.namelist():
+                    continue
+
+                self._io.writeln(
+                    " - Adding: <comment>{}</comment>".format(rel_path),
+                    verbosity=self._io.VERBOSITY_VERY_VERBOSE,
+                )
+
+                self._add_file(wheel, pkg, rel_path)
 
     def _copy_module(self, wheel):
         excluded = self.find_excluded_files()
-        src = self._module.path
         to_add = []
 
         for include in self._module.includes:
@@ -129,6 +143,10 @@ class WheelBuilder(Builder):
                     continue
 
                 if file.suffix == ".pyc":
+                    continue
+
+                if (file, rel_file) in to_add:
+                    # Skip duplicates
                     continue
 
                 self._io.writeln(
@@ -168,9 +186,9 @@ class WheelBuilder(Builder):
             # RECORD itself is recorded with no hash or size
             f.write(self.dist_info + "/RECORD,,\n")
 
-    def find_excluded_files(self):  # type: () -> list
+    def find_excluded_files(self):  # type: () -> Set
         # Checking VCS
-        return []
+        return set()
 
     @property
     def dist_info(self):  # type: () -> str
@@ -179,8 +197,8 @@ class WheelBuilder(Builder):
     @property
     def wheel_filename(self):  # type: () -> str
         return "{}-{}-{}.whl".format(
-            re.sub("[^\w\d.]+", "_", self._package.pretty_name, flags=re.UNICODE),
-            re.sub("[^\w\d.]+", "_", self._meta.version, flags=re.UNICODE),
+            re.sub(r"[^\w\d.]+", "_", self._package.pretty_name, flags=re.UNICODE),
+            re.sub(r"[^\w\d.]+", "_", self._meta.version, flags=re.UNICODE),
             self.tag,
         )
 
@@ -190,8 +208,8 @@ class WheelBuilder(Builder):
         )
 
     def dist_info_name(self, distribution, version):  # type: (...) -> str
-        escaped_name = re.sub("[^\w\d.]+", "_", distribution, flags=re.UNICODE)
-        escaped_version = re.sub("[^\w\d.]+", "_", version, flags=re.UNICODE)
+        escaped_name = re.sub(r"[^\w\d.]+", "_", distribution, flags=re.UNICODE)
+        escaped_version = re.sub(r"[^\w\d.]+", "_", version, flags=re.UNICODE)
 
         return "{}-{}.dist-info".format(escaped_name, escaped_version)
 
@@ -199,10 +217,10 @@ class WheelBuilder(Builder):
     def tag(self):
         if self._package.build:
             platform = get_platform().replace(".", "_").replace("-", "_")
-            impl_name = get_abbr_impl(self._venv)
-            impl_ver = get_impl_ver(self._venv)
+            impl_name = get_abbr_impl(self._env)
+            impl_ver = get_impl_ver(self._env)
             impl = impl_name + impl_ver
-            abi_tag = str(get_abi_tag(self._venv)).lower()
+            abi_tag = str(get_abi_tag(self._env)).lower()
             tag = (impl, abi_tag, platform)
         else:
             platform = "any"
@@ -296,7 +314,7 @@ class WheelBuilder(Builder):
         fp.write("Version: {}\n".format(self._meta.version))
         fp.write("Summary: {}\n".format(self._meta.summary))
         fp.write("Home-page: {}\n".format(self._meta.home_page or "UNKNOWN"))
-        fp.write("License: {}\n".format(self._meta.license or "UNKOWN"))
+        fp.write("License: {}\n".format(self._meta.license or "UNKNOWN"))
 
         # Optional fields
         if self._meta.keywords:
@@ -319,6 +337,9 @@ class WheelBuilder(Builder):
 
         for dep in sorted(self._meta.requires_dist):
             fp.write("Requires-Dist: {}\n".format(dep))
+
+        for url in sorted(self._meta.project_urls, key=lambda u: u[0]):
+            fp.write("Project-URL: {}\n".format(url))
 
         if self._meta.description_content_type:
             fp.write(

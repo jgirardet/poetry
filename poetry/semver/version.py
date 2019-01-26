@@ -4,6 +4,7 @@ from typing import List
 from typing import Union
 
 from .empty_constraint import EmptyConstraint
+from .exceptions import ParseVersionError
 from .patterns import COMPLETE_VERSION
 from .version_constraint import VersionConstraint
 from .version_range import VersionRange
@@ -182,6 +183,10 @@ class Version(VersionRange):
         return self
 
     @property
+    def full_max(self):
+        return self
+
+    @property
     def include_min(self):
         return True
 
@@ -193,7 +198,7 @@ class Version(VersionRange):
     def parse(cls, text):  # type: (str) -> Version
         match = COMPLETE_VERSION.match(text)
         if match is None:
-            raise ValueError('Unable to parse "{}".'.format(text))
+            raise ParseVersionError('Unable to parse "{}".'.format(text))
 
         text = text.rstrip(".")
 
@@ -265,6 +270,13 @@ class Version(VersionRange):
 
         return self
 
+    def equals_without_prerelease(self, other):  # type: (Version) -> bool
+        return (
+            self.major == other.major
+            and self.minor == other.minor
+            and self.patch == other.patch
+        )
+
     def _increment_major(self):  # type: () -> Version
         return Version(self.major + 1, 0, 0, precision=self._precision)
 
@@ -280,7 +292,7 @@ class Version(VersionRange):
         if not pre:
             return
 
-        m = re.match("(?i)^(a|alpha|b|beta|c|pre|rc|dev)[-.]?(\d+)?$", pre)
+        m = re.match(r"(?i)^(a|alpha|b|beta|c|pre|rc|dev)[-.]?(\d+)?$", pre)
         if not m:
             return
 

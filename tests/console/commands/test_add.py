@@ -104,6 +104,7 @@ def test_add_git_constraint(app, repo, installer):
     tester = CommandTester(command)
 
     repo.add_package(get_package("pendulum", "1.4.4"))
+    repo.add_package(get_package("cleo", "0.6.5"))
 
     tester.execute(
         [
@@ -197,7 +198,7 @@ Package operations: 2 installs, 0 updates, 0 removals
 Writing lock file
 
   - Installing pendulum (1.4.4)
-  - Installing demo (0.1.0)
+  - Installing demo (0.1.0 ../distributions/demo-0.1.0-py2.py3-none-any.whl)
 """
 
     assert tester.get_display(True) == expected
@@ -237,7 +238,7 @@ Package operations: 2 installs, 0 updates, 0 removals
 Writing lock file
 
   - Installing pendulum (1.4.4)
-  - Installing demo (0.1.0)
+  - Installing demo (0.1.0 ../distributions/demo-0.1.0.tar.gz)
 """
 
     assert tester.get_display(True) == expected
@@ -417,3 +418,36 @@ Writing lock file
 
     assert "cachy" in content["dev-dependencies"]
     assert content["dev-dependencies"]["cachy"] == "^0.2.0"
+
+
+def test_add_should_not_select_prereleases(app, repo, installer):
+    command = app.find("add")
+    tester = CommandTester(command)
+
+    repo.add_package(get_package("pyyaml", "3.13"))
+    repo.add_package(get_package("pyyaml", "4.2b2"))
+
+    tester.execute([("command", command.get_name()), ("name", ["pyyaml"])])
+
+    expected = """\
+Using version ^3.13 for pyyaml
+
+Updating dependencies
+Resolving dependencies...
+
+
+Package operations: 1 install, 0 updates, 0 removals
+
+Writing lock file
+
+  - Installing pyyaml (3.13)
+"""
+
+    assert tester.get_display(True) == expected
+
+    assert len(installer.installs) == 1
+
+    content = app.poetry.file.read()["tool"]["poetry"]
+
+    assert "pyyaml" in content["dependencies"]
+    assert content["dependencies"]["pyyaml"] == "^3.13"

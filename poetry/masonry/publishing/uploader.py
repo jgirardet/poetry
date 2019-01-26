@@ -14,16 +14,10 @@ from requests_toolbelt.multipart import MultipartEncoder, MultipartEncoderMonito
 
 from poetry.__version__ import __version__
 from poetry.utils.helpers import normalize_version
+from poetry.utils.patterns import wheel_file_re
 
 from ..metadata import Metadata
 
-
-wheel_file_re = re.compile(
-    r"""^(?P<namever>(?P<name>.+?)(-(?P<ver>\d.+?))?)
-        ((-(?P<build>\d.*?))?-(?P<pyver>.+?)-(?P<abi>.+?)-(?P<plat>.+?)
-        \.whl|\.dist-info)$""",
-    re.VERBOSE,
-)
 
 _has_blake2 = hasattr(hashlib, "blake2b")
 
@@ -60,9 +54,9 @@ class Uploader:
             dist.glob(
                 "{}-{}-*.whl".format(
                     re.sub(
-                        "[^\w\d.]+", "_", self._package.pretty_name, flags=re.UNICODE
+                        r"[^\w\d.]+", "_", self._package.pretty_name, flags=re.UNICODE
                     ),
-                    re.sub("[^\w\d.]+", "_", version, flags=re.UNICODE),
+                    re.sub(r"[^\w\d.]+", "_", version, flags=re.UNICODE),
                 )
             )
         )
@@ -250,7 +244,9 @@ class Uploader:
         Register a package to a repository.
         """
         dist = self._poetry.file.parent / "dist"
-        file = dist / "{}-{}.tar.gz".format(self._package.name, self._package.version)
+        file = dist / "{}-{}.tar.gz".format(
+            self._package.name, normalize_version(self._package.version.text)
+        )
 
         if not file.exists():
             raise RuntimeError('"{0}" does not exist.'.format(file.name))
